@@ -9,3 +9,5 @@ export { relayRoutes } from './relay.js';
 export { logRoutes } from './log.js';
 export { redemptionRoutes } from './redemption.js';
 export { optionRoutes, optionPublicRoutes, modelMetaRoutes } from './option.js';
+export { oauthRoutes } from './oauth.js';
+export { webhookRoutes, subscriptionRoutes } from './payment.js';

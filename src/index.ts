@@ -14,7 +14,7 @@ import {
   globalRateLimit,
   jsonErrorHandler,
 } from './middleware/index.js';
-import { userRoutes, tokenRoutes, channelRoutes, relayRoutes, logRoutes, redemptionRoutes, optionRoutes, optionPublicRoutes, modelMetaRoutes } from './routes/index.js';
+import { userRoutes, tokenRoutes, channelRoutes, relayRoutes, logRoutes, redemptionRoutes, optionRoutes, optionPublicRoutes, modelMetaRoutes, oauthRoutes, webhookRoutes, subscriptionRoutes } from './routes/index.js';
 
 // 创建 Hono 应用
 const app = new Hono<{ Bindings: Env; Variables: HonoVariables }>();
@@ -148,6 +148,15 @@ app.route('/api', optionPublicRoutes);
 
 // 模型元数据路由
 app.route('/api/models', modelMetaRoutes);
+
+// OAuth 路由
+app.route('/api/oauth', oauthRoutes);
+
+// 支付 Webhook 路由
+app.route('/api', webhookRoutes);
+
+// 订阅路由
+app.route('/api/subscription', subscriptionRoutes);
 
 // ==================== 404 处理 ====================
 
