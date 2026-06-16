@@ -125,6 +125,15 @@ app.route('/api/channel', channelRoutes);
 // AI 代理路由（OpenAI 兼容 /v1）
 app.route('/v1', relayRoutes);
 
+// Gemini 代理路由
+app.route('/v1beta', relayRoutes);
+
+// Midjourney 代理路由
+app.route('/mj', relayRoutes);
+
+// Suno 代理路由
+app.route('/suno', relayRoutes);
+
 // 日志查询路由
 app.route('/api/log', logRoutes);
 

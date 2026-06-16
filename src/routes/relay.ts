@@ -13,6 +13,7 @@ import {
   relayOpenAIEmbedding,
   relayOpenAIAudio,
   relayClaudeMessages,
+  relayGemini,
   createStreamResponse,
   extractOpenAIUsage,
   extractClaudeUsage,
@@ -307,9 +308,203 @@ relayRoutes.post('/messages', async (c) => {
 /**
  * POST /v1beta/models/:model - Gemini 请求
  */
-relayRoutes.post('/models/:model', async (c) => {
-  // 不对，这是 v1 下的路径。gemini 应该是 /v1beta/models/*
-  return c.json({ error: { message: 'Use /v1beta/models/* for Gemini requests', type: 'invalid_request_error' } }, 400);
+relayRoutes.post('/:path{models/.*}', async (c) => {
+  const body = await c.req.json();
+  const model = body.model || c.req.path.split('/').pop()?.split(':')[0] || '';
+  const userId = c.get('userId');
+  const tokenId = c.get('tokenId');
+  const tokenGroupName = c.get('tokenGroupName') || 'default';
+
+  const services = createServices(c.env);
+  const redis = new RedisService(c.env);
+  const distributor = new ChannelDistributor(c.env.DB, redis);
+
+  try {
+    const relayResult = await distributor.relayWithFallback(
+      model, tokenGroupName, 1,
+      (channel) => relayGemini(channel, body)
+    );
+
+    if (!relayResult) {
+      return c.json({ error: { message: 'No available channel', type: 'invalid_request_error' } }, 404);
+    }
+
+    const responseBody: any = await relayResult.result.json();
+
+    c.executionCtx.waitUntil(
+      services.repos.log.createLog({
+        user_id: userId, token_id: tokenId,
+        channel_id: relayResult.channelId,
+        username: '', token_name: '', channel_name: '',
+        type: 2, content: JSON.stringify({ model, type: 'gemini' }),
+        model_name: model, quota: 1,
+      })
+    );
+
+    return c.json(responseBody);
+  } catch (err: any) {
+    return c.json({ error: { message: err.message, type: 'upstream_error' } }, 502);
+  }
+});
+
+// ==================== Midjourney API ====================
+
+/** Generic Midjourney submit handler */
+async function relayMidjourney(c: any, action: string) {
+  const body = await c.req.json();
+  const model = 'midjourney';
+  const userId = c.get('userId');
+  const tokenId = c.get('tokenId');
+  const tokenGroupName = c.get('tokenGroupName') || 'default';
+
+  const services = createServices(c.env);
+  const redis = new RedisService(c.env);
+  const distributor = new ChannelDistributor(c.env.DB, redis);
+
+  try {
+    const relayResult = await distributor.relayWithFallback(
+      model, tokenGroupName, 1,
+      (channel) => {
+        const baseUrl = channel.base_url || 'https://api.midjourney.com';
+        return fetch(`${baseUrl}/mj/submit/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${channel.key}` },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(120000),
+        });
+      }
+    );
+
+    if (!relayResult) {
+      return c.json({ error: { message: 'No available channel', type: 'invalid_request_error' } }, 404);
+    }
+
+    const responseBody = await relayResult.result.json();
+
+    c.executionCtx.waitUntil(
+      services.repos.log.createLog({
+        user_id: userId, token_id: tokenId,
+        channel_id: relayResult.channelId,
+        username: '', token_name: '', channel_name: '',
+        type: 2, content: JSON.stringify({ model, action }),
+        model_name: model, quota: 10,
+      })
+    );
+
+    return c.json(responseBody);
+  } catch (err: any) {
+    return c.json({ error: { message: err.message, type: 'upstream_error' } }, 502);
+  }
+}
+
+// Midjourney routes
+relayRoutes.post('/mj/submit/imagine', (c) => relayMidjourney(c, 'imagine'));
+relayRoutes.post('/mj/submit/change', (c) => relayMidjourney(c, 'change'));
+relayRoutes.post('/mj/submit/describe', (c) => relayMidjourney(c, 'describe'));
+relayRoutes.post('/mj/submit/blend', (c) => relayMidjourney(c, 'blend'));
+relayRoutes.post('/mj/submit/shorten', (c) => relayMidjourney(c, 'shorten'));
+relayRoutes.post('/mj/submit/action', (c) => relayMidjourney(c, c.req.query('action') || 'imagine'));
+
+relayRoutes.get('/mj/task/:id/fetch', async (c) => {
+  const taskId = c.req.param('id');
+  const redis = new RedisService(c.env);
+  const distributor = new ChannelDistributor(c.env.DB, redis);
+
+  try {
+    const relayResult = await distributor.relayWithFallback(
+      'midjourney', c.get('tokenGroupName') || 'default', 1,
+      (channel) => {
+        const baseUrl = channel.base_url || 'https://api.midjourney.com';
+        return fetch(`${baseUrl}/mj/task/${taskId}/fetch`, {
+          headers: { 'Authorization': `Bearer ${channel.key}` },
+          signal: AbortSignal.timeout(15000),
+        });
+      }
+    );
+
+    if (!relayResult) {
+      return c.json({ error: { message: 'No available channel', type: 'invalid_request_error' } }, 404);
+    }
+
+    return c.json(await relayResult.result.json());
+  } catch (err: any) {
+    return c.json({ error: { message: err.message, type: 'upstream_error' } }, 502);
+  }
+});
+
+// ==================== Suno API ====================
+
+relayRoutes.post('/suno/submit/:action', async (c) => {
+  const action = c.req.param('action');
+  const body = await c.req.json();
+  const model = 'suno';
+  const services = createServices(c.env);
+  const redis = new RedisService(c.env);
+  const distributor = new ChannelDistributor(c.env.DB, redis);
+
+  try {
+    const relayResult = await distributor.relayWithFallback(
+      model, c.get('tokenGroupName') || 'default', 1,
+      (channel) => {
+        const baseUrl = channel.base_url || 'https://api.suno.ai';
+        return fetch(`${baseUrl}/suno/submit/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${channel.key}` },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(120000),
+        });
+      }
+    );
+
+    if (!relayResult) {
+      return c.json({ error: { message: 'No available channel', type: 'invalid_request_error' } }, 404);
+    }
+
+    const responseBody = await relayResult.result.json();
+
+    c.executionCtx.waitUntil(
+      services.repos.log.createLog({
+        user_id: c.get('userId'), token_id: c.get('tokenId'),
+        channel_id: relayResult.channelId,
+        username: '', token_name: '', channel_name: '',
+        type: 2, content: JSON.stringify({ model, action }),
+        model_name: model, quota: 10,
+      })
+    );
+
+    return c.json(responseBody);
+  } catch (err: any) {
+    return c.json({ error: { message: err.message, type: 'upstream_error' } }, 502);
+  }
+});
+
+relayRoutes.post('/suno/fetch', async (c) => {
+  const body = await c.req.json();
+  const redis = new RedisService(c.env);
+  const distributor = new ChannelDistributor(c.env.DB, redis);
+
+  try {
+    const relayResult = await distributor.relayWithFallback(
+      'suno', c.get('tokenGroupName') || 'default', 1,
+      (channel) => {
+        const baseUrl = channel.base_url || 'https://api.suno.ai';
+        return fetch(`${baseUrl}/suno/fetch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${channel.key}` },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(15000),
+        });
+      }
+    );
+
+    if (!relayResult) {
+      return c.json({ error: { message: 'No available channel', type: 'invalid_request_error' } }, 404);
+    }
+
+    return c.json(await relayResult.result.json());
+  } catch (err: any) {
+    return c.json({ error: { message: err.message, type: 'upstream_error' } }, 502);
+  }
 });
 
 // ==================== 模型列表 ====================
